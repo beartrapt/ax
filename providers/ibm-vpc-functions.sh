@@ -287,11 +287,6 @@ delete_snapshot() {
 }
 
 # axiom-images
-snapshots() {
-    ibmcloud is images --visibility private --output json
-}
-
-# axiom-images
 create_snapshot() {
     instance="$1"
     snapshot_name="$2"
@@ -471,7 +466,8 @@ create_instances() {
     region="$3"
     user_data="$4"
     timeout="$5"
-    shift 5
+    disk="$6"
+    shift 6
     names=("$@")  # Remaining arguments are instance names
 
     # Get required config values
@@ -542,6 +538,7 @@ create_instances() {
                 if ! grep -q "^$name\$" "$processed_file"; then
                     echo "$name" >> "$processed_file"
                     >&2 echo -e "${BWhite}Initialized instance '${BGreen}$name${Color_Off}${BWhite}' at IP '${BGreen}${ip}${BWhite}'!"
+                    axiom_stats_log_instance "$name" "${ip:-N/A}" "$region" "$profile" "$image_id" ""
                 fi
             else
                 all_ready=false

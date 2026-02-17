@@ -14,6 +14,17 @@ create_instance() {
         user_data="$5"
         root_pass="$(jq -r .op "$AXIOM_PATH/axiom.json")"
 
+        # Check if root_pass is empty or "null"
+         if [ -z "$root_pass" ] || [ "$root_pass" = "null" ]; then
+          # Generate a new password
+          root_pass=$(cat /dev/urandom | base64 | head -c 128 | tr -d '+=-' | tr -d '\n' | tr -d /)
+          # Resolve the real file behind the symlink
+          real_file=$(readlink -f "$AXIOM_PATH/axiom.json")
+          tmp_file=$(mktemp)
+          # Update the "op" field with the new password
+          jq --arg pass "$root_pass" '.op = $pass' "$real_file" > "$tmp_file" && mv "$tmp_file" "$real_file"
+        fi
+
         user_data_base64=$(mktemp)
         echo "$user_data" | base64 | tr -d '\n' > "$user_data_base64"
 
@@ -48,7 +59,7 @@ delete_instance() {
 #
 # takes no arguments, outputs JSON object with instances
 instances() {
-	linode-cli linodes list --json
+	linode-cli linodes list --all-rows --json
 }
 
 # takes one argument, name of instance, returns raw IP address
@@ -66,21 +77,48 @@ instance_list() {
 # used by axiom-ls
 instance_pretty() {
   data=$(instances)
-  #number of linodes
-  linodes=$(echo $data|jq -r '.[]|.id'|wc -l )
-  #default size from config file
-  type="$(jq -r .default_size "$AXIOM_PATH/axiom.json")"
-  #monthly price of linode type 
-  price=$(linode-cli linodes type-view $type --json|jq -r '.[].price.monthly')
-  #  totalPrice=$(( "$price * $linodes" | bc))
-  totalPrice=$(awk "BEGIN {print $price * $linodes}")
 
+  # number of linodes
+  linodes=$(echo "$data" | jq -r '.[] | .id' | wc -l)
+
+  # fetch all types once
+  types_table=$(linode-cli linodes types --json | jq -r '.[] | "\(.id)|\(.price.monthly)"')
+
+  # header line as CSV
   header="Instance,Primary Ip,Backend Ip,Region,Size,Status,\$/M"
-  totals="_,_,_,Instances,$linodes,Total,\$$totalPrice"
-  fields=".[] | [.label,.ipv4[0],.ipv4[1],.region,.type,.status, \"$price\"]| @csv"
-  #printing part
-  #sort -k1 sorts all data by label/instance/linode name
-  (echo "$header" && echo $data|(jq -r "$fields" |sort -k1) && echo "$totals") | sed 's/"//g' | column -t -s, 
+
+  # totals variable placeholder
+  totalPrice=0
+  output=""
+
+  # loop over each instance without subshell
+  while read -r inst; do
+    label=$(echo "$inst" | jq -r '.label')
+    ipv4_0=$(echo "$inst" | jq -r '.ipv4[0]')
+    ipv4_1=$(echo "$inst" | jq -r '.ipv4[1]')
+    region=$(echo "$inst" | jq -r '.region')
+    type=$(echo "$inst" | jq -r '.type')
+    status=$(echo "$inst" | jq -r '.status')
+
+    # lookup price from table
+    price=$(printf '%s\n' "$types_table" | awk -F'|' -v t="$type" '$1 == t {print $2; exit}')
+
+    # default to 0 if not found
+    [ -z "$price" ] && price=0
+
+    price=$(printf "%.2f" "$price")
+
+    # accumulate total
+    totalPrice=$(echo "$totalPrice + $price" | bc)
+
+    # append CSV line
+    output+="$label,$ipv4_0,$ipv4_1,$region,$type,$status,$price"$'\n'
+  done < <(echo "$data" | jq -c '.[]')
+
+  # print everything using column with comma separator
+  (echo "$header" && echo "$output" | sort -t, -k1 && \
+   echo "_,_,_,Instances,$linodes,Total,$(printf "%.2f" "$totalPrice")") \
+   | column -t -s,
 }
 
 ###################################################################
@@ -235,17 +273,9 @@ get_image_id() {
 # Manage snapshots
 # used for axiom-images
 #
-# get JSON data for snapshots
-snapshots() {
-        linode-cli images list --json
-}
-
-# only displays private images
-# axiom-images
 get_snapshots() {
-    linode-cli images list --is_public false
+       linode-cli --no-truncation --format label,id,description,total_size,status images list --is_public false
 }
-
 
 # Delete a snapshot by its name
 # axiom-images
@@ -322,7 +352,7 @@ delete_instances() {
     linode_names=()
     linode_ids=()
 
-    linode_cli_output=$(linode-cli linodes list --format "id,label" --no-headers --text)
+    linode_cli_output=$(linode-cli linodes list --all-rows --format "id,label" --no-headers --text)
 
     # gather the IDs for the provided names
     for name in $names; do
@@ -368,10 +398,23 @@ create_instances() {
     region="$3"
     user_data="$4"
     timeout="$5"
-    shift 5
+    disk="$6"
+    shift 6
     names=("$@")  # Remaining arguments are instance names
 
+    # Get the root password from axiom.json
     root_pass="$(jq -r .op "$AXIOM_PATH/axiom.json")"
+
+    # Check if root_pass is empty or "null"
+    if [ -z "$root_pass" ] || [ "$root_pass" = "null" ]; then
+        # Generate a new password
+        root_pass=$(cat /dev/urandom | base64 | head -c 128 | tr -d '+=-' | tr -d '\n' | tr -d /)
+        # Resolve the real file behind the symlink
+        real_file=$(readlink -f "$AXIOM_PATH/axiom.json")
+        tmp_file=$(mktemp)
+        # Update the "op" field with the new password
+        jq --arg pass "$root_pass" '.op = $pass' "$real_file" > "$tmp_file" && mv "$tmp_file" "$real_file"
+    fi
 
     # Encode user data as Base64
     user_data_base64=$(mktemp)
@@ -388,7 +431,7 @@ create_instances() {
 
     # Create instances in batches of 'batch_size'
     for name in "${names[@]}"; do
-        linode_id=$(linode-cli linodes create \
+        linode_output=$(linode-cli linodes create \
             --type "$size" \
             --region "$region" \
             --image "$image_id" \
@@ -397,13 +440,15 @@ create_instances() {
             --private_ip true \
             --metadata.user_data "$(cat "$user_data_base64")" \
             --format id \
-            --no-header 2>/dev/null \
-            --text )
+            --no-header \
+            --text \
+            --no-defaults 2>&1)
 
-        if [ -n "$linode_id" ]; then
-            instance_ids+=("$linode_id")
+        if [[ "$linode_output" =~ ^[0-9]+$ ]]; then
+            instance_ids+=("$linode_output")
         else
-            >&2 echo "Error creating instance: $name"
+            >&2 echo "Error creating instance '$name'"
+            >&2 echo "$linode_output"
         fi
 
         # After every 'batch_size' creations, wait before creating the next batch
@@ -413,7 +458,7 @@ create_instances() {
         fi
     done
 
-    # Clean up temporary file
+    # Clean up temporary file for user data
     rm -f "$user_data_base64"
 
     # Monitor instance statuses
@@ -425,13 +470,13 @@ create_instances() {
         all_ready=true
 
         # Fetch current Linode data
-        current_statuses=$(linode-cli linodes list --format id,label,status,ipv4 --no-header --text)
+        current_statuses=$(linode-cli linodes list --all-rows --format id,label,status,ipv4 --no-header --text)
 
         for i in "${!instance_ids[@]}"; do
             id="${instance_ids[$i]}"
             name="${instance_names[$i]}"
 
-            # Extract status and IP
+            # Extract status and IP using awk
             status=$(echo "$current_statuses" | awk -v id="$id" '$1 == id {print $3}')
             ip=$(echo "$current_statuses" | awk -v id="$id" '$1 == id {print $4}')
 
@@ -440,6 +485,7 @@ create_instances() {
                 if ! grep -q "^$name\$" "$processed_file"; then
                     echo "$name" >> "$processed_file"
                     >&2 echo -e "${BWhite}Initialized instance '${BGreen}$name${Color_Off}${BWhite}' at '${BGreen}$ip${BWhite}'!"
+                    axiom_stats_log_instance "$name" "${ip:-N/A}" "$region" "$size" "$image_id" "$id"
                 fi
             else
                 all_ready=false
@@ -456,7 +502,7 @@ create_instances() {
         elapsed=$((elapsed + interval))
     done
 
-    # If we exit the loop, timeout was reached without all instances running
+    # Timeout reached without all instances running
     rm -f "$processed_file"
     return 1
 }

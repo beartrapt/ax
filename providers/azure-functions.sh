@@ -84,7 +84,7 @@ instance_pretty() {
 		echo $csv_data | jq -r '[.name, .publicIps, .size, .region, .powerState] | @csv'
 	done
 
-	echo "\"_\",\"_\",\"_\",\"_\",\"Total\",\"\$$i\"") | column -t -s, | tr -d '"' 
+	echo "\"_\",\"_\",\"_\",\"_\",\"Total\",\"\$$i\"") | column -t -s, | tr -d '"'
 
 	i=0
 }
@@ -244,11 +244,6 @@ get_image_id() {
 # Manage snapshots
 # used for axiom-images
 #
-snapshots() {
-        az image list --resource-group $resource_group
-}
-
-# axiom-images
 get_snapshots() {
         az image list --output table --resource-group $resource_group
 }
@@ -392,7 +387,8 @@ create_instances() {
     region="$3"
     user_data="$4"
     timeout="$5"
-    shift 5
+    disk="$6"
+    shift 6
     names=("$@")
 
     # Get SSH key from config
@@ -524,6 +520,7 @@ create_instances() {
                     # Mark as fully initialized
                     echo "$vmName" >> "$monitored_vms_file"
                     >&2 echo -e "${BWhite}Initialized instance '${BGreen}$vmName${Color_Off}${BWhite}' at IP '${BGreen}${ip}${BWhite}'!${Color_Off}"
+                    axiom_stats_log_instance "$vmName" "${ip:-N/A}" "$region" "$size" "$image_id" ""
                 fi
             done
         fi

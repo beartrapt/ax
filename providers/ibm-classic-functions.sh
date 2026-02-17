@@ -258,11 +258,6 @@ delete_snapshot() {
 }
 
 # axiom-images
-snapshots() {
-        ibmcloud sl image list --output json --private
-}
-
-# axiom-images
 create_snapshot() {
         instance="$1"
         snapshot_name="$2"
@@ -392,7 +387,8 @@ create_instances() {
     region="$3"
     user_data="$4"
     timeout="$5"
-    shift 5
+    disk="$6"
+    shift 6
     names=("$@")  # Remaining arguments are instance names
 
     cpu="$(jq -r '.cpu' "$AXIOM_PATH/axiom.json")"
@@ -434,7 +430,13 @@ create_instances() {
     fi
 
     # Extract instance IDs from the creation response
-    instance_ids=($(echo "$instance_data" | grep $base_hostname | awk '{print $1}'))
+    if [ "$count" -eq 1 ]; then
+        # Single instance: parse vertical table output
+        instance_ids=($(echo "$instance_data" | awk '/^ID[ \t]+[0-9]+/ { print $2 }'))
+    else
+        # Multiple instances: parse tabular response
+        instance_ids=($(echo "$instance_data" | grep "$base_hostname" | awk '{print $1}'))
+    fi
 
     # Verify we got the expected number of instances
     if [ "${#instance_ids[@]}" -ne "$count" ]; then
@@ -466,6 +468,7 @@ create_instances() {
                     ibmcloud sl vs edit "$id" --hostname "$new_name" 2>&1 >>/dev/null
                     echo "$new_name" >> "$processed_file"
                     >&2 echo -e "${BWhite}Initialized instance '${BGreen}$new_name${Color_Off}${BWhite}' at IP '${BGreen}${ip}${BWhite}'!"
+                    axiom_stats_log_instance "$new_name" "${ip:-N/A}" "$region" "$size" "$image_id" "$id"
                 fi
             else
                 # If any instance is not ACTIVE, we must keep waitingreson
