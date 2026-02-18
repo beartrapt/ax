@@ -254,12 +254,6 @@ get_image_id() {
 # Manage snapshots
 # used for axiom-images
 #
-# get JSON data for snapshots
-# axiom-images
-snapshots() {
-        hcloud image list -t snapshot -o json
-}
-
 get_snapshots()
 {
         hcloud image list -t snapshot
@@ -424,7 +418,8 @@ create_instances() {
     local location="$3"
     local user_data="$4"
     local timeout="$5"
-    shift 5
+    local disk="$6"
+    shift 6
 
     names=("$@")
     pids_data=()   # Will store "pid:name:tmpfile"
@@ -452,7 +447,7 @@ create_instances() {
                 --name "$sshkey" \
                 --public-key-from-file "$pubkey_path" \
                 -o json 2>/dev/null \
-            | jq -r '.id'
+            | jq -r '.ssh_key.id'
         )"
         if [ -z "$keyid" ]; then
             >&2 echo -e "${BRed}Error: Failed to create SSH key in Hetzner${Color_Off}"
@@ -558,6 +553,7 @@ create_instances() {
                         if [ "$status" = "running" ] && [ -n "$ip" ] && [ "$ip" != "null" ]; then
                             mark_notified "$name"
                             >&2 echo -e "${BWhite}Initialized instance '${BGreen}$name${Color_Off}${BWhite}' at '${BGreen}$ip${BWhite}'!${Color_Off}"
+                            axiom_stats_log_instance "$name" "${ip:-N/A}" "$location" "$server_type" "$image_id" ""
                         fi
                     fi
                 fi
