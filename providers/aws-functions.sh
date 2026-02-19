@@ -89,21 +89,10 @@ delete_instance() {
 # Instances functions
 # used by many functions in this file
 instances() {
-    local tempdir
-    tempdir=$(mktemp -d)
-    local regions
-    regions=$(aws ec2 describe-regions --query "Regions[].RegionName" --output text)
-
-    # Fetch describe-instances for each region in parallel
-    for region in $regions; do
-        aws ec2 describe-instances --region "$region" --output json > "$tempdir/$region.json" &
-    done
-    wait
-
-    # Merge all Reservations into one global array
-    jq -s '{Reservations: map(.Reservations[]) }' "$tempdir"/*.json
-
-    rm -rf "$tempdir"
+    # PERFORMANCE FIX: Only query the configured default region instead of all regions
+    # Querying all 33 AWS regions in parallel was causing network saturation and SSH drops
+    # If you need multi-region support, implement caching or query specific regions only
+    aws ec2 describe-instances
 }
 
 # takes one argument, name of instance, returns raw IP address
